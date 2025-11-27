@@ -10,11 +10,14 @@ declare global {
     clearMessages?: () => void;
     addErrorMessage?: (message: string) => void;
     addSelectionInfo?: (info: string) => void;
+    handleDroppedFiles?: (paths: string[]) => void;
     // 配置相关
     updateProviders?: (jsonStr: string) => void;
     updateActiveProvider?: (jsonStr: string) => void;
     showError?: (message: string) => void;
     updateUsageStatistics?: (jsonStr: string) => void;
+    // 项目路径
+    onProjectRootPathReceived?: (path: string) => void;
   }
 }
 

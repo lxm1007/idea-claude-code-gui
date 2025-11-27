@@ -23,8 +23,12 @@ import com.google.gson.JsonObject;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.Transferable;
+import java.awt.dnd.*;
 import java.util.List;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -143,7 +147,48 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                 // 加载 HTML
                 browser.loadHTML(htmlContent);
 
-                mainPanel.add(browser.getComponent(), BorderLayout.CENTER);
+                // 添加文件拖拽支持
+                JComponent browserComponent = browser.getComponent();
+                new DropTarget(browserComponent, DnDConstants.ACTION_COPY, new DropTargetAdapter() {
+                    @Override
+                    public void drop(DropTargetDropEvent event) {
+                        try {
+                            event.acceptDrop(DnDConstants.ACTION_COPY);
+                            Transferable transferable = event.getTransferable();
+                            if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                                @SuppressWarnings("unchecked")
+                                List<File> files = (List<File>) transferable.getTransferData(DataFlavor.javaFileListFlavor);
+                                List<String> paths = new ArrayList<>();
+                                String basePath = project.getBasePath();
+                                for (File file : files) {
+                                    String filePath = file.getAbsolutePath();
+                                    // 转换为相对路径
+                                    if (basePath != null && filePath.startsWith(basePath)) {
+                                        filePath = "@" + filePath.substring(basePath.length() + 1);
+                                    } else {
+                                        filePath = "@" + filePath;
+                                    }
+                                    if (file.isDirectory()) {
+                                        filePath += "/";
+                                    }
+                                    paths.add(filePath);
+                                }
+                                // 发送到前端
+                                String pathsJson = new Gson().toJson(paths);
+                                String js = "if(window.handleDroppedFiles){window.handleDroppedFiles(" + pathsJson + ");}";
+                                browser.getCefBrowser().executeJavaScript(js, browser.getCefBrowser().getURL(), 0);
+                                System.out.println("[DropTarget] Dropped files: " + paths);
+                            }
+                            event.dropComplete(true);
+                        } catch (Exception e) {
+                            System.err.println("[DropTarget] Error: " + e.getMessage());
+                            e.printStackTrace();
+                            event.dropComplete(false);
+                        }
+                    }
+                }, true);
+
+                mainPanel.add(browserComponent, BorderLayout.CENTER);
 
             } catch (Exception e) {
                 // 备用显示
@@ -291,6 +336,11 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                 case "get_usage_statistics":
                     System.out.println("[Backend] 处理: get_usage_statistics");
                     handleGetUsageStatistics(content);
+                    break;
+
+                case "get_project_root_path":
+                    System.out.println("[Backend] 处理: get_project_root_path");
+                    handleGetProjectRootPath();
                     break;
 
                 default:
@@ -1306,7 +1356,7 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                     // 简单处理：如果内容是 "current"，则使用当前项目路径
                     // 否则如果是路径，则使用该路径
                     // 默认为 "all"
-                    
+
                     if (content != null && !content.isEmpty() && !content.equals("{}")) {
                         // 尝试解析 JSON
                          try {
@@ -1329,15 +1379,15 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                             }
                         }
                     }
-                    
+
                     System.out.println("[Backend] Getting usage statistics for path: " + projectPath);
-                    
+
                     ClaudeHistoryReader reader = new ClaudeHistoryReader();
                     ClaudeHistoryReader.ProjectStatistics stats = reader.getProjectStatistics(projectPath);
-                    
+
                     Gson gson = new Gson();
                     String json = gson.toJson(stats);
-                    
+
                     SwingUtilities.invokeLater(() -> {
                         callJavaScript("window.updateUsageStatistics", escapeJs(json));
                     });
@@ -1349,6 +1399,26 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                     });
                 }
             });
+        }
+
+        /**
+         * 获取项目根目录路径
+         */
+        private void handleGetProjectRootPath() {
+            try {
+                String projectRootPath = sdkBridge.getProjectRootPath();
+                System.out.println("[Backend] 项目根路径: " + projectRootPath);
+
+                SwingUtilities.invokeLater(() -> {
+                    callJavaScript("window.onProjectRootPathReceived", escapeJs(projectRootPath));
+                });
+            } catch (Exception e) {
+                System.err.println("[Backend] Failed to get project root path: " + e.getMessage());
+                e.printStackTrace();
+                SwingUtilities.invokeLater(() -> {
+                    callJavaScript("window.onProjectRootPathReceived", escapeJs(""));
+                });
+            }
         }
 
         public JPanel getContent() {

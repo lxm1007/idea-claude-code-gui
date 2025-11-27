@@ -1264,6 +1264,14 @@ public class ClaudeSDKBridge {
     }
 
     /**
+     * 获取项目根目录路径
+     * @return 当前工作目录作为项目根路径
+     */
+    public String getProjectRootPath() {
+        return System.getProperty("user.dir");
+    }
+
+    /**
      * 更新进程的环境变量，确保 PATH 包含 Node.js 所在目录
      */
     private void updateProcessEnvironment(ProcessBuilder pb) {
@@ -1301,7 +1309,7 @@ public class ClaudeSDKBridge {
             "/sbin",
             System.getProperty("user.home") + "/.nvm/current/bin"
         };
-        
+
         for (String p : commonPaths) {
             if (!path.contains(p)) {
                 newPath.append(separator).append(p);

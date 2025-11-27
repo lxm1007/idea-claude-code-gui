@@ -30,3 +30,25 @@ export const openBrowser = (url?: string) => {
   sendBridgeEvent('open_browser', url);
 };
 
+export const getProjectRootPath = (): Promise<string> => {
+  return new Promise((resolve) => {
+    // 设置回调
+    window.onProjectRootPathReceived = (path: string) => {
+      resolve(path);
+      // 清理回调，避免内存泄漏
+      delete window.onProjectRootPathReceived;
+    };
+
+    // 发送请求
+    sendBridgeEvent('get_project_root_path');
+
+    // 超时处理
+    setTimeout(() => {
+      if (window.onProjectRootPathReceived) {
+        delete window.onProjectRootPathReceived;
+        resolve('');
+      }
+    }, 5000);
+  });
+};
+

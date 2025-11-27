@@ -20,6 +20,7 @@ import type {
   TodoItem,
   ToolResultBlock,
 } from './types';
+import { getProjectRootPath } from './utils/bridge';
 
 type ViewMode = 'chat' | 'history' | 'settings';
 
@@ -35,11 +36,6 @@ const sendBridgeMessage = (event: string, payload = '') => {
   }
 };
 
-type PendingFileItem = {
-  path: string;
-  type: 'file' | 'directory';
-};
-
 const App = () => {
   const [messages, setMessages] = useState<ClaudeMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
@@ -49,13 +45,13 @@ const App = () => {
   const [currentView, setCurrentView] = useState<ViewMode>('chat');
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
-  const [pendingCodeBlocks, setPendingCodeBlocks] = useState<{ id: string; content: string; formatted: string }[]>([]);
-  const [pendingFiles, setPendingFiles] = useState<PendingFileItem[]>([]);
   const [historyNavigator, setHistoryNavigator] = useState<{
     isVisible: boolean;
     messageIndex: number;
     messageText: string;
   } | null>(null);
+  const [projectRootPath, setProjectRootPath] = useState<string>('');
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -77,19 +73,57 @@ const App = () => {
     window.addErrorMessage = (message) =>
       setMessages((prev) => [...prev, { type: 'error', content: message }]);
     window.addSelectionInfo = (info) => {
-      // 将选中的代码添加到待发送列表
-      const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      const blockNumber = pendingCodeBlocks.length + 1;
-      const formattedInfo = `代码块 ${blockNumber}: ${info}`;
-      setPendingCodeBlocks((prev) => [
-        ...prev,
-        {
-          id: blockId,
-          content: info,
-          formatted: formattedInfo,
-        },
-      ]);
+      // info 格式: @path/to/file#Lstart-end 或 @path/to/file#Lline
+      setInputMessage((prev) => {
+        const codeBlock = `\n${info}\n`;
+        return prev + codeBlock;
+      });
+
+      setTimeout(() => {
+        if (inputRef.current) {
+          // 计算光标位置：定位到新行开始（第二个换行符后）
+          const len = inputRef.current.value.length;
+          const cursorPos = len; // 定位到新行开始
+          inputRef.current.focus();
+          inputRef.current.setSelectionRange(cursorPos, cursorPos);
+        }
+      }, 100);
     };
+    
+    // 处理从 Java 端拖拽的文件
+    window.handleDroppedFiles = (paths: string[]) => {
+      console.log('[Frontend] 收到拖拽文件:', paths);
+      if (paths && paths.length > 0) {
+        const formattedPaths = paths.map(p => p.startsWith('@') ? p : '@' + p);
+        const pathsText = formattedPaths.join('\n') + '\n';
+        setInputMessage((prev) => prev + pathsText);
+        
+        setTimeout(() => {
+          if (inputRef.current) {
+            const len = inputRef.current.value.length;
+            inputRef.current.focus();
+            inputRef.current.setSelectionRange(len, len);
+          }
+        }, 100);
+      }
+    };
+  }, []);
+
+  // 获取项目根路径
+  useEffect(() => {
+    const loadProjectRootPath = async () => {
+      try {
+        const rootPath = await getProjectRootPath();
+        if (rootPath) {
+          setProjectRootPath(rootPath);
+          console.log('[Frontend] 项目根路径:', rootPath);
+        }
+      } catch (error) {
+        console.error('[Frontend] 获取项目根路径失败:', error);
+      }
+    };
+
+    loadProjectRootPath();
   }, []);
 
   useEffect(() => {
@@ -122,6 +156,7 @@ const App = () => {
     const textarea = inputRef.current;
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+    textarea.scrollTop = textarea.scrollHeight;
   }, [inputMessage]);
 
   const interruptSession = () => {
@@ -156,19 +191,9 @@ const App = () => {
     setShowNewSessionConfirm(false);
   };
 
-  // 移除待发送的代码块
-  const removePendingCodeBlock = (index: number) => {
-    setPendingCodeBlocks((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  // 移除待发送的文件
-  const removePendingFile = (index: number) => {
-    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
-  };
-
   // 递归获取文件和文件夹路径
-  const getDroppedItems = async (dataTransfer: DataTransfer): Promise<PendingFileItem[]> => {
-    const items: PendingFileItem[] = [];
+  const getDroppedItems = async (dataTransfer: DataTransfer): Promise<string[]> => {
+    const paths: string[] = [];
     const fileList = Array.from(dataTransfer.files);
 
     // 检查是否支持webkitGetAsEntry (用于检测文件夹)
@@ -180,10 +205,21 @@ const App = () => {
           const file = await new Promise<File>((resolve) => {
             (entry as FileSystemFileEntry).file(resolve);
           });
-          items.push({ path: `@${path}${file.name}`, type: 'file' });
+
+          // 计算相对路径
+          let relativePath = '';
+          if (projectRootPath && file.webkitRelativePath) {
+            relativePath = `@${file.webkitRelativePath}`;
+          } else if (file.webkitRelativePath) {
+            relativePath = `@${file.webkitRelativePath}`;
+          } else {
+            relativePath = `@${path}${file.name}`;
+          }
+
+          paths.push(relativePath);
         } else if (entry.isDirectory) {
           const dirEntry = entry as FileSystemDirectoryEntry;
-          items.push({ path: `@${path}${dirEntry.name}/`, type: 'directory' });
+          paths.push(`@${path}${dirEntry.name}/`);
           const reader = dirEntry.createReader();
           const readEntries = (): Promise<FileSystemEntry[]> => {
             return new Promise((resolve) => {
@@ -210,65 +246,93 @@ const App = () => {
       await Promise.all(promises);
     } else {
       // 降级方案：只处理文件
-      items.push(...fileList.map(file => ({ path: `@${file.name}`, type: 'file' as const })));
+      fileList.forEach(file => {
+        let relativePath = '';
+        if (projectRootPath && file.webkitRelativePath) {
+          relativePath = `@${file.webkitRelativePath}`;
+        } else if (file.webkitRelativePath) {
+          relativePath = `@${file.webkitRelativePath}`;
+        } else {
+          relativePath = `@${file.name}`;
+        }
+        paths.push(relativePath);
+      });
     }
 
-    return items;
+    return paths;
   };
 
   // 处理文件拖拽
   const handleFileDrop = (event: React.DragEvent) => {
+    console.log('[Drag] drop event triggered!');
     event.preventDefault();
     event.stopPropagation();
+    setIsDragging(false);
+    
+    console.log('[Drag] files:', event.dataTransfer.files.length);
+    console.log('[Drag] items:', event.dataTransfer.items?.length);
+    console.log('[Drag] types:', event.dataTransfer.types);
+    
     getDroppedItems(event.dataTransfer).then(filePaths => {
-      setPendingFiles((prev) => [...prev, ...filePaths]);
+      console.log('[Drag] filePaths:', filePaths);
+      if (filePaths.length > 0) {
+        const pathsText = filePaths.join('\n') + '\n';
+        setInputMessage((prev) => prev + pathsText);
+        
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+          }
+        }, 50);
+      }
+    }).catch(error => {
+      console.error('[Drag] error:', error);
     });
   };
 
   const handleDragOver = (event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    console.log('[Drag] dragover');
   };
 
   const handleDragEnter = (event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    setIsDragging(true);
+    console.log('[Drag] dragenter');
   };
 
   const handleDragLeave = (event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+    console.log('[Drag] dragleave');
   };
 
-  // 发送消息时，将待发送的代码块和文件一起发送
+  // 清理消息内容
+  const cleanMessageForSending = (text: string): string => {
+    return text.trim();
+  };
+
+  // 发送消息
   const sendMessage = () => {
     const message = inputMessage.trim();
-    if (!message && pendingCodeBlocks.length === 0 && pendingFiles.length === 0 || loading) {
+    if (!message || loading) {
       return;
     }
 
-    // 构建完整的消息内容
-    let fullMessage = message;
-    const attachments: string[] = [];
-
-    // 添加代码块
-    if (pendingCodeBlocks.length > 0) {
-      attachments.push(...pendingCodeBlocks.map(block => block.content));
+    // 清理消息，移除代码块标记
+    const cleanedMessage = cleanMessageForSending(message);
+    if (!cleanedMessage) {
+      return;
     }
 
-    // 添加文件
-    if (pendingFiles.length > 0) {
-      attachments.push(...pendingFiles.map(file => file.path));
-    }
-
-    if (attachments.length > 0) {
-      fullMessage = message ? `${message}\n\n${attachments.join('\n')}` : attachments.join('\n');
-    }
-
-    sendBridgeMessage('send_message', fullMessage);
+    sendBridgeMessage('send_message', cleanedMessage);
     setInputMessage('');
-    setPendingCodeBlocks([]); // 清空待发送的代码块
-    setPendingFiles([]); // 清空待发送的文件
   };
 
   const toggleThinking = (messageIndex: number, blockIndex: number) => {
@@ -282,7 +346,77 @@ const App = () => {
   const isThinkingExpanded = (messageIndex: number, blockIndex: number) =>
     Boolean(expandedThinking[`${messageIndex}_${blockIndex}`]);
 
+  // 查找路径的范围（所有 @ 路径：代码块、文件、目录）
+  const findCodeBlockRange = (text: string, cursorPosition: number): { start: number; end: number } | null => {
+    const lines = text.split('\n');
+    let currentPos = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // 检测所有路径：@path/file#Lstart-Lend、@path/file、@path/dir/
+      if (line.match(/^@\S+/)) {
+        // 路径开始位置（包括前面的换行符，如果有的话）
+        const blockStart = i > 0 ? currentPos - 1 : currentPos;
+
+        // 路径结束位置（整行，包括换行符）
+        const blockEnd = currentPos + line.length;
+
+        // 检查光标是否在当前路径范围内
+        if (cursorPosition >= blockStart && cursorPosition <= blockEnd) {
+          return { start: blockStart, end: blockEnd };
+        }
+      }
+
+      currentPos += line.length + 1; // +1 for newline
+    }
+
+    return null;
+  };
+
   const handleKeydown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const textarea = event.currentTarget;
+    const cursorPosition = textarea.selectionStart;
+    const text = textarea.value;
+
+    // 处理 Backspace 或 Delete 键 - 保护代码块整体性
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      const codeBlockRange = findCodeBlockRange(text, cursorPosition);
+      if (codeBlockRange) {
+        // 检查是否正在删除代码块的一部分
+        const selectionStart = textarea.selectionStart;
+        const selectionEnd = textarea.selectionEnd;
+
+        // 如果选中范围在代码块内，或者删除操作会影响代码块
+        if (
+          (selectionStart === selectionEnd &&
+           (selectionStart > codeBlockRange.start && selectionStart <= codeBlockRange.end)) ||
+          (selectionStart < codeBlockRange.end && selectionEnd > codeBlockRange.start)
+        ) {
+          event.preventDefault();
+          // 删除整个代码块（包括前后的换行）
+          const beforeBlock = text.substring(0, codeBlockRange.start);
+          const afterBlock = text.substring(codeBlockRange.end);
+
+          // 清理前后的多余换行
+          const cleanedBefore = beforeBlock.replace(/\n+$/, '');
+          const cleanedAfter = afterBlock.replace(/^\n+/, '');
+          const newText = cleanedBefore + (cleanedBefore && cleanedAfter ? '\n' : '') + cleanedAfter;
+
+          setInputMessage(newText);
+
+          // 设置光标位置
+          setTimeout(() => {
+            if (textarea) {
+              const newCursorPos = cleanedBefore.length + (cleanedBefore && cleanedAfter ? 1 : 0);
+              textarea.setSelectionRange(newCursorPos, newCursorPos);
+            }
+          }, 0);
+          return;
+        }
+      }
+    }
+
     // Ctrl/Cmd + 上方向键：浏览上一条历史消息
     if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowUp') {
       event.preventDefault();
@@ -351,9 +485,6 @@ const App = () => {
   // 重新发送消息（将消息内容填入输入框）
   const resendMessage = (message: ClaudeMessage) => {
     const text = getMessageText(message);
-    // 如果有待发送的代码块或文件，先清空它们，因为我们要发送的是历史消息
-    setPendingCodeBlocks([]);
-    setPendingFiles([]);
     setInputMessage(text);
     setHistoryNavigator(null);
     // 聚焦输入框
@@ -402,6 +533,45 @@ const App = () => {
         .join('\n');
     }
     return '(空消息)';
+  };
+
+  // 解析输入内容，识别代码块路径和文件路径
+  const parseInputContent = (content: string) => {
+    const lines = content.split('\n');
+    const result: Array<{ type: 'codeblock' | 'file' | 'directory' | 'text'; text: string; key: string }> = [];
+
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+
+      // 代码块路径格式：@path/to/file#L1-L10 或 @path/to/file#L1
+      if (line.match(/^@\S+#L\d+/)) {
+        result.push({
+          type: 'codeblock' as const,
+          text: line,
+          key: `codeblock-${index}`,
+        });
+        continue;
+      }
+
+      // 文件路径格式：@path/to/file 或 @path/to/dir/
+      if (line.startsWith('@')) {
+        const isDirectory = line.endsWith('/');
+        result.push({
+          type: (isDirectory ? 'directory' : 'file') as 'directory' | 'file',
+          text: line,
+          key: `file-${index}`,
+        });
+        continue;
+      }
+
+      result.push({
+        type: 'text' as const,
+        text: line,
+        key: `text-${index}`,
+      });
+    }
+
+    return result;
   };
 
   const shouldShowMessage = (message: ClaudeMessage) => {
@@ -713,7 +883,13 @@ const App = () => {
       )}
 
       {currentView === 'chat' && (
-        <div className="input-area" onDrop={handleFileDrop} onDragOver={handleDragOver}>
+        <div
+          className={`input-area ${isDragging ? 'dragging' : ''}`}
+          onDrop={handleFileDrop}
+          onDragOver={handleDragOver}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+        >
           {/* 消息历史导航器 */}
           {historyNavigator && (
             <div className="message-history-navigator">
@@ -764,27 +940,76 @@ const App = () => {
           )}
 
           {/* 快捷键提示 */}
-          {!historyNavigator && pendingCodeBlocks.length === 0 && pendingFiles.length === 0 && (
+          {!historyNavigator && !inputMessage.trim() && (
             <div className="input-hint">
               <span className="hint-icon">💡</span>
               <span className="hint-text">
                 提示：在 IDE 中选中代码后按
                 <kbd className="hint-keyboard">Cmd/ Ctrl + Alt + K</kbd>
-                添加到待发送列表
+                添加到输入框，或直接拖拽文件和文件夹
               </span>
             </div>
           )}
+          
           <div className="input-container">
-            <textarea
-              id="messageInput"
-              ref={inputRef}
-              value={inputMessage}
-              onChange={(event) => setInputMessage(event.target.value)}
-              onKeyDown={handleKeydown}
-              placeholder="输入消息... (Shift+Enter 换行, Enter 发送)"
-              rows={1}
-              disabled={loading}
-            />
+            <div className="input-wrapper">
+              <textarea
+                id="messageInput"
+                ref={inputRef}
+                value={inputMessage}
+                onChange={(event) => setInputMessage(event.target.value)}
+                onKeyDown={handleKeydown}
+                onDrop={handleFileDrop}
+                onDragOver={handleDragOver}
+                onDragEnter={handleDragEnter}
+                onDragLeave={handleDragLeave}
+                onScroll={(e) => {
+                  const preview = e.currentTarget.nextElementSibling as HTMLElement;
+                  if (preview) {
+                    preview.scrollTop = e.currentTarget.scrollTop;
+                  }
+                }}
+                placeholder="输入消息... (Shift+Enter 换行, Enter 发送)"
+                rows={1}
+                disabled={loading}
+              />
+              {/* 颜色编码覆盖层 - 显示在输入框内 */}
+              {inputMessage.trim() && (
+                <div className="input-highlight" aria-hidden="true">
+                  {parseInputContent(inputMessage).map((line: { type: 'codeblock' | 'file' | 'directory' | 'text'; text: string; key: string }, index: number, array: Array<{ type: 'codeblock' | 'file' | 'directory' | 'text'; text: string; key: string }>) => {
+                    const isLast = index === array.length - 1;
+                    const content = line.text + (isLast ? '' : '\n');
+                    
+                    if (line.type === 'codeblock') {
+                      return (
+                        <span key={line.key} className="highlight-line codeblock-highlight">
+                          {content}
+                        </span>
+                      );
+                    }
+                    if (line.type === 'file') {
+                      return (
+                        <span key={line.key} className="highlight-line file-highlight">
+                          {content}
+                        </span>
+                      );
+                    }
+                    if (line.type === 'directory') {
+                      return (
+                        <span key={line.key} className="highlight-line directory-highlight">
+                          {content}
+                        </span>
+                      );
+                    }
+                    return (
+                      <span key={line.key} className="highlight-line">
+                        {content}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <div className="input-footer">
               <div className="input-tools-left" />
               <div className="input-actions">
@@ -796,7 +1021,7 @@ const App = () => {
                   <button
                     className="action-button send-button"
                     onClick={sendMessage}
-                    disabled={(!inputMessage.trim() && pendingCodeBlocks.length === 0 && pendingFiles.length === 0) || loading}
+                    disabled={!inputMessage.trim() || loading}
                     title="发送消息"
                   >
                     <SendIcon />
@@ -805,51 +1030,6 @@ const App = () => {
               </div>
             </div>
           </div>
-
-          {/* 待发送的附件列表（代码块 + 文件） */}
-          {(pendingCodeBlocks.length > 0 || pendingFiles.length > 0) && (
-            <div className="pending-attachments">
-              {/* 待发送的代码块 */}
-              {pendingCodeBlocks.map((codeBlock, index) => (
-                <div key={codeBlock.id} className="pending-item pending-code">
-                  <div className="pending-item-header">
-                    <span className="pending-item-icon">💻</span>
-                    <span className="pending-item-text">{codeBlock.formatted}</span>
-                    <button
-                      className="pending-item-remove"
-                      onClick={() => removePendingCodeBlock(index)}
-                      title="移除代码块"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {/* 待发送的文件 */}
-              {pendingFiles.map((fileItem, index) => (
-                <div
-                  key={`file-${index}`}
-                  className={`pending-item ${
-                    fileItem.type === 'directory' ? 'pending-directory' : 'pending-file'
-                  }`}
-                >
-                  <div className="pending-item-header">
-                    <span className="pending-item-icon">
-                      {fileItem.type === 'directory' ? '📁' : '📎'}
-                    </span>
-                    <span className="pending-item-text">{fileItem.path}</span>
-                    <button
-                      className="pending-item-remove"
-                      onClick={() => removePendingFile(index)}
-                      title={`移除${fileItem.type === 'directory' ? '文件夹' : '文件'}`}
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
