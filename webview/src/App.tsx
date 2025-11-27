@@ -51,6 +51,11 @@ const App = () => {
   const [showNewSessionConfirm, setShowNewSessionConfirm] = useState(false);
   const [pendingCodeBlocks, setPendingCodeBlocks] = useState<{ id: string; content: string; formatted: string }[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFileItem[]>([]);
+  const [historyNavigator, setHistoryNavigator] = useState<{
+    isVisible: boolean;
+    messageIndex: number;
+    messageText: string;
+  } | null>(null);
 
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -278,10 +283,91 @@ const App = () => {
     Boolean(expandedThinking[`${messageIndex}_${blockIndex}`]);
 
   const handleKeydown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl/Cmd + 上方向键：浏览上一条历史消息
+    if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowUp') {
+      event.preventDefault();
+      navigateHistory(-1);
+      return;
+    }
+    // Ctrl/Cmd + 下方向键：浏览下一条历史消息
+    if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowDown') {
+      event.preventDefault();
+      navigateHistory(1);
+      return;
+    }
+    // Enter 发送消息
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       sendMessage();
     }
+  };
+
+  // 导航历史消息（Ctrl+↑/↓）
+  const navigateHistory = (direction: number) => {
+    const userMessages = messages
+      .map((msg, idx) => ({ msg, idx }))
+      .filter(({ msg }) => msg.type === 'user');
+
+    if (userMessages.length === 0) {
+      return;
+    }
+
+    if (!historyNavigator) {
+      // 第一次使用，从最后一条消息开始
+      const lastUserMsg = userMessages[userMessages.length - 1];
+      const text = getMessageText(lastUserMsg.msg);
+      setHistoryNavigator({
+        isVisible: true,
+        messageIndex: lastUserMsg.idx,
+        messageText: text,
+      });
+      setInputMessage(text);
+      return;
+    }
+
+    // 找到当前消息在用户消息列表中的位置
+    const currentIndexInUserMessages = userMessages.findIndex(
+      ({ idx }) => idx === historyNavigator.messageIndex
+    );
+
+    const newIndex = currentIndexInUserMessages + direction;
+
+    if (newIndex >= 0 && newIndex < userMessages.length) {
+      const targetMessage = userMessages[newIndex];
+      const text = getMessageText(targetMessage.msg);
+      setHistoryNavigator({
+        isVisible: true,
+        messageIndex: targetMessage.idx,
+        messageText: text,
+      });
+      setInputMessage(text);
+    } else if (newIndex < 0) {
+      // 到达最旧的消息
+      setHistoryNavigator(null);
+      setInputMessage('');
+    }
+  };
+
+  // 重新发送消息（将消息内容填入输入框）
+  const resendMessage = (message: ClaudeMessage) => {
+    const text = getMessageText(message);
+    // 如果有待发送的代码块或文件，先清空它们，因为我们要发送的是历史消息
+    setPendingCodeBlocks([]);
+    setPendingFiles([]);
+    setInputMessage(text);
+    setHistoryNavigator(null);
+    // 聚焦输入框
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    }, 0);
+  };
+
+  // 取消历史导航
+  const cancelHistoryNavigator = () => {
+    setHistoryNavigator(null);
+    setInputMessage('');
   };
 
   const loadHistorySession = (sessionId: string) => {
@@ -603,6 +689,19 @@ const App = () => {
                     ))
                   )}
                 </div>
+                {/* 消息操作按钮 */}
+                <div className="message-actions">
+                  {message.type === 'user' && (
+                    <button
+                      className="message-action-button"
+                      onClick={() => resendMessage(message)}
+                      title="重新发送此消息"
+                    >
+                      <span className="codicon codicon-refresh" />
+                      <span>重发</span>
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -615,8 +714,57 @@ const App = () => {
 
       {currentView === 'chat' && (
         <div className="input-area" onDrop={handleFileDrop} onDragOver={handleDragOver}>
+          {/* 消息历史导航器 */}
+          {historyNavigator && (
+            <div className="message-history-navigator">
+              <div className="navigator-info">
+                <span className="navigator-icon">🕰️</span>
+                <span className="navigator-text">{historyNavigator.messageText}</span>
+                <span className="navigator-position">
+                  {(() => {
+                    const userMessages = messages.filter((msg) => msg.type === 'user');
+                    const currentMsgIndex = userMessages.findIndex(
+                      (msg) => messages[historyNavigator.messageIndex] === msg
+                    );
+                    return `第 ${currentMsgIndex + 1}/${userMessages.length} 条`;
+                  })()}
+                </span>
+              </div>
+              <div className="navigator-controls">
+                <button
+                  className="navigator-button"
+                  onClick={() => navigateHistory(-1)}
+                  title="上一条 (Ctrl+↑)"
+                >
+                  ↑
+                </button>
+                <button
+                  className="navigator-button"
+                  onClick={() => navigateHistory(1)}
+                  title="下一条 (Ctrl+↓)"
+                >
+                  ↓
+                </button>
+                <button
+                  className="navigator-button primary"
+                  onClick={() => setHistoryNavigator(null)}
+                  title="使用此消息"
+                >
+                  使用
+                </button>
+                <button
+                  className="navigator-button"
+                  onClick={cancelHistoryNavigator}
+                  title="取消"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* 快捷键提示 */}
-          {pendingCodeBlocks.length === 0 && pendingFiles.length === 0 && (
+          {!historyNavigator && pendingCodeBlocks.length === 0 && pendingFiles.length === 0 && (
             <div className="input-hint">
               <span className="hint-icon">💡</span>
               <span className="hint-text">
