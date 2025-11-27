@@ -1,0 +1,5 @@
+build
+.gradle
+.idea
+claude-bridge/node_modules/
+webview/node_modules
