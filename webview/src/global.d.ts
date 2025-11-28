@@ -18,6 +18,13 @@ declare global {
     updateUsageStatistics?: (jsonStr: string) => void;
     // 项目路径
     onProjectRootPathReceived?: (path: string) => void;
+    // 文件列表和命令列表
+    onFileListResult?: (json: string) => void;
+    onCommandListResult?: (json: string) => void;
+    // 用量统计回调
+    onUsageUpdate?: (json: string) => void;
+    onModeChanged?: (mode: string) => void;
+    onModelChanged?: (modelId: string) => void;
   }
 }
 

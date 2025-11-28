@@ -1671,7 +1671,7 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                                 fileObj.addProperty("name", name);
                                 String rel = child.getAbsolutePath().substring(basePath.length());
                                 if (rel.startsWith(File.separator)) rel = rel.substring(1);
-                                rel = rel.replace("\", "/");
+                                rel = rel.replace("\\", "/");
                                 fileObj.addProperty("path", rel);
                                 fileObj.addProperty("type", child.isDirectory() ? "directory" : "file");
                                 if (child.isFile()) {
@@ -1741,7 +1741,7 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
                     relativePath = relativePath.substring(1);
                 }
                 // 统一使用正斜杠
-                relativePath = relativePath.replace("\", "/");
+                relativePath = relativePath.replace("\\", "/");
 
                 // 检查是否匹配查询
                 if (!query.isEmpty() &&
@@ -1894,8 +1894,6 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory {
             } catch (Exception e) {
                 System.err.println("[Backend] Failed to set model: " + e.getMessage());
                 e.printStackTrace();
-            }
-        }
             }
         }
 
