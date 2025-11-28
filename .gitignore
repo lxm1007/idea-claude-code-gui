@@ -54,3 +54,6 @@ webview/dist/
 
 src/main/resources/html/*
 .idea
+.specify
+.claude
+specs
